@@ -4,7 +4,8 @@ from datetime import datetime
 import base64
 import cv2
 import numpy as np
-from elevenlabs import generate, play, set_api_key, save, voices
+from elevenlabs import play, save, voices
+from elevenlabs.client import ElevenLabs # new line
 from dotenv import load_dotenv
 import resend
 import json
@@ -119,7 +120,7 @@ def describe_image(collageFilePath):
     )
     print('langchain result: ', result)
     return result
-    
+
 def encode_image(image_path):
     while True:
         try:
@@ -160,13 +161,13 @@ def is_interesting(image, filePath):
 
     with open(filePath, "rb") as saved_image:
         exif_image = ExifImage(saved_image)
-    
+
     exif_image.user_comment = result
 
     # this cases multiple writes for 1 image, not ideal
     with open(filePath, 'wb') as new_image_file:
         new_image_file.write(exif_image.get_file())
-    
+
     return any(x in interesting_array for x in top_categories), result
 
 def take_photo():
@@ -196,13 +197,13 @@ def save_image_collage(base64_images):
     for base64_frame in base64_images:
         # Decode the base64 string
         jpg_original = base64.b64decode(base64_frame)
-        
+
         # Convert binary data to numpy array
         jpg_as_np = np.frombuffer(jpg_original, dtype=np.uint8)
-        
+
         # Decode numpy array to image
         frame = cv2.imdecode(jpg_as_np, flags=1)
-        
+
         if montage is None:
             # Initialize the montage with the first frame
             montage = frame
