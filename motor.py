@@ -1,3 +1,5 @@
+import time
+
 # Define GPIO pins
 ControlPin = [4, 17, 27, 22]  # IN1, IN2, IN3, IN4
 
