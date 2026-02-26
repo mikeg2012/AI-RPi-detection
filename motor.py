@@ -34,9 +34,9 @@ def setStep(GPIO, w1, w2, w3, w4):
     GPIO.output(ControlPin[2], w3)
     GPIO.output(ControlPin[3], w4)
 
-def feed_cat(GPIO):
+def feed_cat(GPIO, feed_amount):
     # Rotate 512 steps (approx. one full revolution)
-    for i in range(1024):
+    for i in range(feed_amount):
         for step in seq_fw:
             setStep(GPIO, step[0], step[1], step[2], step[3])
             time.sleep(0.001) # Speed control

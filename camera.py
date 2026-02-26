@@ -18,6 +18,11 @@ import RPi.GPIO as GPIO
 import time
 import motor
 
+CAT_FEED_AMOUNT1 = 256
+CAT_FEED_AMOUNT2 = 512
+CAT_FEED_AMOUNT3 = 768
+CAT_FEED_AMOUNT4 = 1024
+
 load_dotenv()
 
 USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "False").lower() == "true"
@@ -71,7 +76,7 @@ lastEmailTs = None
 
 def main():
     init_gpio()
-    motor.feed_cat(GPIO)
+    motor.feed_cat(GPIO, CAT_FEED_AMOUNT1)
     exit()
 
     base64Frames = []
