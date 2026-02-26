@@ -1,11 +1,11 @@
-from picamera2 import Picamera2
+# from picamera2 import Picamera2
 import time, os, logging, getpass
 from datetime import datetime
 import base64
 import cv2
 import numpy as np
-from elevenlabs import play, save, voices
-from elevenlabs.client import ElevenLabs # new line
+#from elevenlabs import play, save, voices
+#from elevenlabs.client import ElevenLabs # new line
 from dotenv import load_dotenv
 import resend
 import json
@@ -14,6 +14,9 @@ from exif import Image as ExifImage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
+import RPi.GPIO as GPIO
+import time
+import motor
 
 load_dotenv()
 
@@ -26,7 +29,9 @@ if USE_LOCAL_MODEL:
     # Load the model and libraries if we're using it
     import torch
     from torchvision import models
-    torch.backends.quantized.engine = 'qnnpack'
+    print(torch.backends.quantized.supported_engines)
+#    torch.backends.quantized.engine = 'qnnpack'
+    torch.backends.quantized.engine = 'onednn'
 
     # Load model into memory and prep weights
     weights = models.Swin_V2_S_Weights.DEFAULT
@@ -49,60 +54,69 @@ save_base_path = os.environ.get("TMP_FILE_BASE_PATH", "/tmp")
 save_dir = os.path.join(save_base_path, save_location)
 USE_ELEVEN = False
 os.makedirs(save_dir, exist_ok=True)
-if (os.environ.get("ELEVEN_API_KEY") != None):
-    set_api_key(os.environ.get("ELEVEN_API_KEY"))
-    USE_ELEVEN = True
 resend.api_key = os.environ.get("RESEND_API_KEY")
 print(f"USE_ELEVEN: {USE_ELEVEN}")
 
-picam2 = Picamera2()
-picam2.start()
+cam = cv2.VideoCapture(0)
+if not cam.isOpened():
+    print("Error: Could not open camera.")
+    exit()
+
+
+#picam2 = Picamera2()
+#picam2.start()
 time.sleep(2)
 requestPrompt = os.environ.get("REQUEST_PROMPT")
 lastEmailTs = None
 
-@tool
-def send_email(detected, description, filePath):
-    """
-    send an email based on if a cat was detected in the response. 
-    There are three parameters: 
-    - detected: Boolean. Is the object detected?
-    - description: string. Description of the scene
-    - filePath: string. You don't need to worry about this one. 
-    """
+def main():
+    init_gpio()
+    motor.feed_cat(GPIO)
+    exit()
 
+    base64Frames = []
+    numOfFrames = 5
+#    availableFunctions = {"send_email": send_email}
     global lastEmailTs
+    captureMode = False
 
-    if (detected == False):
-        return
-    f = open(filePath, "rb").read()
-    params = {
-        "from": os.environ.get("FROM_EMAIL"),
-        "to": [os.environ.get("TO_EMAIL")],
-        "subject": "AI Detection!",
-        "html": f"<strong>{description}</strong>",
-        "attachments": [{"content": list(f), "filename": "image.jpg"}],
-    }
-    email = resend.Emails.send(params)
-    if (email['id']!=None):
-        lastEmailTs = datetime.now()
-    logging.info(f"Email sending status: {email}, {lastEmailTs}")
+    while True:
+        filePath, image = take_photo()
 
-tools = [send_email]
-llm_with_tools = llm.bind_tools(tools)
+        if not captureMode:
+            interestingBool, objects_detected = is_interesting(image, filePath)
+            if interestingBool:
+                captureMode = True
+                print(f"Interesting image detected:\n {objects_detected}")
+            else:
+                print("Not interesting")
+                continue
 
-def play_audio(text):
-    try: 
-        audio = generate(text, voice=os.environ.get("ELEVEN_VOICE_ID"))
-        unique_id = base64.urlsafe_b64encode(os.urandom(30)).decode("utf-8").rstrip("=")
-        dir_path = os.path.join("narration", unique_id)
-        os.makedirs(dir_path, exist_ok=True)
-        file_path = os.path.join(dir_path, "audio.wav")
+        base64_image = encode_image(filePath)
+        if len(base64Frames) < numOfFrames:
+            base64Frames.append(base64_image)
+        else:
+            # We got enough frames, let's process them
+            captureMode = False
+            collageFilePath = save_image_collage(base64Frames)
+            base64Frames = []
 
-        save(audio, file_path)
-        play(audio)
-    except Exception as e:
-        print(f"Error generating and playing audio: {e}")
+        time.sleep(2)
+
+    # Cleanup
+    GPIO.cleanup()
+
+# Функция инициализации GPIO
+def init_gpio():
+    # Use BCM GPIO references
+    GPIO.setmode(GPIO.BCM)
+
+    # Set pins as output
+    for pin in motor.ControlPin:
+        GPIO.setup(pin, GPIO.OUT)
+        GPIO.output(pin, False)
+    return GPIO
+
 
 
 def describe_image(collageFilePath):
@@ -138,7 +152,10 @@ def is_interesting(image, filePath):
     # Everything is interesting if we're not using the model
     if not USE_LOCAL_MODEL:
         return True, "Everything is awesome"
-    model_image = image.resize(model_input_size).convert('RGB')
+#    model_image = image.resize(model_input_size).convert('RGB')
+
+    model_image = image.copy().resize(model_input_size).convert('RGB')
+
     # preprocess
     input_tensor = preprocess(model_image)
 
@@ -171,21 +188,35 @@ def is_interesting(image, filePath):
     return any(x in interesting_array for x in top_categories), result
 
 def take_photo():
-    global picam2
+#    global picam2
     try:
         timestamp = int(datetime.timestamp(datetime.now()))
         image_name = f'{timestamp}.jpg'
         current_dir = os.path.dirname(__file__)
         static_dir = os.path.join(current_dir, save_dir)
         filepath = os.path.join(static_dir, image_name)
-        request = picam2.capture_request()
-        image = request.make_image("main")
+
+        ret, image = cam.read()
+        if not ret:
+            print("Error: Failed to grab frame.")
+            return '', ''
+
+        file_name = "c:\\tmp\\captured_image.jpg"
+        cv2.imwrite(file_name, image)
+        print(f"Image saved as {file_name}")
+
+#        config = picam2.still_configuration()
+#        picam2.configure(config)
+#        config = picam2.preview_configuration(main={"size": (640, 480)}, "format": "YUV420"})
+#        picam2.configure(config)
+#        request = picam2.capture_request()
+#        image = request.make_image("main")
 
         # request.save("main", filepath)
-        image.save(filepath)
+#        image.save(filepath)
 
-        request.release()
-        logging.info(f"Image captured successfully. Path: {filepath}")
+#        request.release()
+#        logging.info(f"Image captured successfully. Path: {filepath}")
 
         return filepath, image
     except Exception as e:
@@ -218,54 +249,7 @@ def save_image_collage(base64_images):
     logging.info(f"Montage saved successfully. Path: {file_path}")
     return file_path
 
-
-def main():
-    base64Frames = []
-    numOfFrames = 5
-    availableFunctions = {"send_email": send_email}
-    global lastEmailTs
-    captureMode = False
-
-    while True:
-        filePath, image = take_photo()
-        if not captureMode:
-            interestingBool, objects_detected = is_interesting(image, filePath)
-            if interestingBool:
-                captureMode = True
-                print(f"Interesting image detected:\n {objects_detected}")
-            else:
-                print("Not interesting")
-                continue
-
-        base64_image = encode_image(filePath)
-        if len(base64Frames) < numOfFrames:
-            base64Frames.append(base64_image)
-        else:
-            # We got enough frames, let's process them
-            captureMode = False 
-            collageFilePath = save_image_collage(base64Frames)
-            aiResponse = describe_image(collageFilePath)
-            descriptionText = None
-            if (aiResponse.tool_calls):
-                for tool_call in aiResponse.tool_calls:
-                    try:
-                        functionToCall = tool_call['name']
-                        args = tool_call['args']
-                        descriptionText = args['description']
-                        print('lastEmailTs', lastEmailTs)
-                        if (lastEmailTs == None or (datetime.now() - lastEmailTs).seconds > 60):
-                            args["filePath"] = collageFilePath
-                            selectedFunction = availableFunctions[functionToCall]
-                            selectedFunction.invoke(args)
-                            print(f'description text: {descriptionText}')
-                    except Exception as e:
-                        print(f"An error occurred while calling the function: {e}")
-
-            if (USE_ELEVEN): 
-                play_audio(aiResponse.content or descriptionText) 
-            base64Frames = []
-
-        time.sleep(2)
-
 if __name__ == "__main__":
     main()
+    cam.release()
+    cv2.destroyAllWindows()
