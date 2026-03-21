@@ -1,35 +1,37 @@
-# from picamera2 import Picamera2
-import time, os, logging, getpass
+import time, os, logging
 from datetime import datetime
 import base64
 import cv2
 import numpy as np
-#from elevenlabs import play, save, voices
-#from elevenlabs.client import ElevenLabs # new line
 from dotenv import load_dotenv
 import resend
-import json
 import interesting_list
 from exif import Image as ExifImage
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
-import RPi.GPIO as GPIO
-import time
-import motor
+import sys
 
+if sys.platform == "win32":
+    from PIL import Image
+else:
+    import RPi.GPIO as GPIO
+    import motor
+    from picamera2 import Picamera2
+
+# задаем константы
 CAT_FEED_AMOUNT1 = 256
 CAT_FEED_AMOUNT2 = 512
 CAT_FEED_AMOUNT3 = 768
 CAT_FEED_AMOUNT4 = 1024
 
+# загружаем содержимое .env файла
 load_dotenv()
 
 USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "False").lower() == "true"
 print(f"USE_LOCAL_MODEL: {USE_LOCAL_MODEL}")
-if USE_LOCAL_MODEL: 
+
+# код для загоузки локальной модели
+if USE_LOCAL_MODEL:
     print(f"Loading local model to memory")
-    # Start the timer
+    # Запоминаем время начала
     start_time = time.time()
     # Load the model and libraries if we're using it
     import torch
@@ -38,78 +40,100 @@ if USE_LOCAL_MODEL:
 #    torch.backends.quantized.engine = 'qnnpack'
     torch.backends.quantized.engine = 'onednn'
 
-    # Load model into memory and prep weights
+    # Загрузка в память и подготовка весов модели
     weights = models.Swin_V2_S_Weights.DEFAULT
     preprocess = weights.transforms()
     model = models.swin_v2_s(weights=weights)
     model.eval()
     model_input_size = 640, 480
 
-    # End the timer
+    # Время завершения загрузки модели
     end_time = time.time()
     execution_time = end_time - start_time
-    print(f"Loaded local model to memory in {execution_time} seconds")
 
+    # вывод времени загрузки модели
+    print(f"Loaded local model to memory in {execution_time} seconds")
+# загружаем список животных
 interesting_array = interesting_list.animals
 
 logging.basicConfig(level=logging.INFO) 
-llm = ChatOpenAI(model="gpt-4-vision-preview", max_tokens=500)
-save_location = os.environ.get("TMP_FILE_PATH", 'static')
-save_base_path = os.environ.get("TMP_FILE_BASE_PATH", "/tmp")
-save_dir = os.path.join(save_base_path, save_location)
+#llm = ChatOpenAI(model="gpt-4-vision-preview", max_tokens=500)
+global base, static
+base = os.environ.get("TMP_FILE_BASE_PATH", "tmp")
+static = os.environ.get("TMP_FILE_STATIC_PATH", "static")
+
+if sys.platform == "win32":
+    save_dir = os.path.join('c:', os.sep, base, static)
+    static_save_dir = os.path.join('c:', os.sep, base)
+else:
+    save_dir = os.path.join(os.sep, base, static)
+    static_save_dir = os.path.join(os.sep, base)
+
 USE_ELEVEN = False
 os.makedirs(save_dir, exist_ok=True)
 resend.api_key = os.environ.get("RESEND_API_KEY")
-print(f"USE_ELEVEN: {USE_ELEVEN}")
-
-cam = cv2.VideoCapture(0)
-if not cam.isOpened():
-    print("Error: Could not open camera.")
-    exit()
-
-
-#picam2 = Picamera2()
-#picam2.start()
-time.sleep(2)
 requestPrompt = os.environ.get("REQUEST_PROMPT")
 lastEmailTs = None
 
-def main():
-    init_gpio()
-    motor.feed_cat(GPIO, CAT_FEED_AMOUNT1)
-    exit()
+print(f"USE_ELEVEN: {USE_ELEVEN}")
 
-    base64Frames = []
-    numOfFrames = 5
+if sys.platform == "win32":
+    cam = cv2.VideoCapture(1)
+    if not cam.isOpened():
+        print("Error: Could not open camera.")
+        exit()
+else:
+    picam2 = Picamera2()
+    picam2.start()
+
+time.sleep(2)
+
+
+def main():
+    if sys.platform == "win32":
+        print("win32 platform detected")
+        print(f"{sys.platform} platform detected")
+    else:
+        init_gpio()
+        motor.feed_cat(GPIO, CAT_FEED_AMOUNT1)
+        print(f"{sys.platform} platform detected")
+
+#    base64Frames = []
+#    numOfFrames = 5
 #    availableFunctions = {"send_email": send_email}
-    global lastEmailTs
+#    global lastEmailTs
     captureMode = False
 
     while True:
-        filePath, image = take_photo()
+        filePath, image = take_photo(save_dir)
 
         if not captureMode:
             interestingBool, objects_detected = is_interesting(image, filePath)
             if interestingBool:
-                captureMode = True
+                # найдено что-то интересное
+#                captureMode = True
                 print(f"Interesting image detected:\n {objects_detected}")
             else:
-                print("Not interesting")
+                # нет интересной картинки
+                print("Nothing interesting")
+                print("Make pause..")
+                time.sleep(2)
+                print("continue...")
                 continue
 
-        base64_image = encode_image(filePath)
-        if len(base64Frames) < numOfFrames:
-            base64Frames.append(base64_image)
-        else:
-            # We got enough frames, let's process them
-            captureMode = False
-            collageFilePath = save_image_collage(base64Frames)
-            base64Frames = []
+#        base64_image = encode_image(filePath)
+#        if len(base64Frames) < numOfFrames:
+#            base64Frames.append(base64_image)
+#        else:
+#            # We got enough frames, let's process them
+#            captureMode = False
+#            collageFilePath = save_image_collage(base64Frames, static_save_dir)
+#            base64Frames = []
 
-        time.sleep(2)
+#        time.sleep(2)
 
     # Cleanup
-    GPIO.cleanup()
+#    GPIO.cleanup()
 
 # Функция инициализации GPIO
 def init_gpio():
@@ -122,44 +146,48 @@ def init_gpio():
         GPIO.output(pin, False)
     return GPIO
 
+#def describe_image(collageFilePath):
+#    base64 = encode_image(collageFilePath)
+#    result = llm_with_tools.invoke(
+#        [HumanMessage(
+#            content = [
+#                 {"type": "text", "text": requestPrompt},
+#                 {"type": "image_url",
+#                  "image_url":
+#                    {"url": f"data:image/jpeg;base64,{base64}"
+#                    }
+#                }
+#        ])]
+#    )
+#    print('langchain result: ', result)
+#    return result
 
-
-def describe_image(collageFilePath):
-    base64 = encode_image(collageFilePath)
-    result = llm_with_tools.invoke(
-        [HumanMessage(
-            content = [
-                 {"type": "text", "text": requestPrompt},
-                 {"type": "image_url", 
-                  "image_url": 
-                    {"url": f"data:image/jpeg;base64,{base64}"
-                    }
-                }
-        ])]
-    )
-    print('langchain result: ', result)
-    return result
-
-def encode_image(image_path):
-    while True:
-        try:
-            with open(image_path, "rb") as image_file:
-                return base64.b64encode(image_file.read()).decode("utf-8")
-        except IOError as e:
-            if e.errno != errno.EACCES:
-                # Not a "file in use" error, re-raise
-                raise
-            # File is being written to, wait a bit and retry
-            time.sleep(0.1)
+#def encode_image(image_path):
+#    while True:
+#        try:
+#            with open(image_path, "rb") as image_file:
+#                return base64.b64encode(image_file.read()).decode("utf-8")
+#        except IOError as e:
+#            if e.errno != errno.EACCES:
+#                # Not a "file in use" error, re-raise
+#                raise
+#            # File is being written to, wait a bit and retry
+#            time.sleep(0.1)
 
 # image from PIL
 def is_interesting(image, filePath):
     # Everything is interesting if we're not using the model
     if not USE_LOCAL_MODEL:
         return True, "Everything is awesome"
-#    model_image = image.resize(model_input_size).convert('RGB')
 
-    model_image = image.copy().resize(model_input_size).convert('RGB')
+    if sys.platform == "win32":
+        if isinstance(image, np.ndarray):
+            model_image = Image.fromarray(image)
+        else:
+            model_image = image.copy()
+        model_image = model_image.resize(model_input_size).convert('RGB')
+    else:
+        model_image = image.resize(model_input_size).convert('RGB')
 
     # preprocess
     input_tensor = preprocess(model_image)
@@ -192,42 +220,39 @@ def is_interesting(image, filePath):
 
     return any(x in interesting_array for x in top_categories), result
 
-def take_photo():
-#    global picam2
+def take_photo(save_dir):
+    if sys.platform == "win32":
+        print("Making photo...")
+    else:
+        global picam2
+        print("Making photo...")
+
     try:
         timestamp = int(datetime.timestamp(datetime.now()))
         image_name = f'{timestamp}.jpg'
-        current_dir = os.path.dirname(__file__)
-        static_dir = os.path.join(current_dir, save_dir)
-        filepath = os.path.join(static_dir, image_name)
+        filepath = os.path.join(save_dir, image_name)
 
-        ret, image = cam.read()
-        if not ret:
-            print("Error: Failed to grab frame.")
-            return '', ''
+        if sys.platform == "win32":
+            ret, image = cam.read()
+            if not ret:
+                print("Error: Failed to grab frame.")
+                return '', ''
+            cv2.imwrite(filepath, image)
+            print(f"Image saved as {filepath}")
+        else:
+            request = picam2.capture_request()
+            image = request.make_image("main")
 
-        file_name = "c:\\tmp\\captured_image.jpg"
-        cv2.imwrite(file_name, image)
-        print(f"Image saved as {file_name}")
+            # request.save("main", filepath)
+            image.save(filepath)
 
-#        config = picam2.still_configuration()
-#        picam2.configure(config)
-#        config = picam2.preview_configuration(main={"size": (640, 480)}, "format": "YUV420"})
-#        picam2.configure(config)
-#        request = picam2.capture_request()
-#        image = request.make_image("main")
-
-        # request.save("main", filepath)
-#        image.save(filepath)
-
-#        request.release()
-#        logging.info(f"Image captured successfully. Path: {filepath}")
-
+            request.release()
+            logging.info(f"Image captured successfully. Path: {filepath}")
         return filepath, image
     except Exception as e:
         logging.error(f"Error capturing image: {e}")
 
-def save_image_collage(base64_images):
+def save_image_collage(base64_images, static_save_dir):
     montage = None
 
     for base64_frame in base64_images:
@@ -249,12 +274,18 @@ def save_image_collage(base64_images):
 
     # Save the montage as an image
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    file_path = os.path.join(save_dir, f"montage_{timestamp}.jpg")
+    file_path = os.path.join(static_save_dir, f"montage_{timestamp}.jpg")
     cv2.imwrite(file_path, montage)
     logging.info(f"Montage saved successfully. Path: {file_path}")
     return file_path
 
 if __name__ == "__main__":
     main()
-    cam.release()
-    cv2.destroyAllWindows()
+    if sys.platform == "win32":
+        cam.release()
+        cv2.destroyAllWindows()
+    else:
+        model_image = image.resize(model_input_size).convert('RGB')
+
+
+
